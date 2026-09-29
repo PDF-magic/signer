@@ -1,7 +1,7 @@
 {
   "name": "stellar-pdf-signer",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@stellar/freighter-api": "^6.0.1",
+    "@creit.tech/stellar-wallets-kit": "^2.6.0",
     "@stellar/stellar-sdk": "^17.1.0",
     "express": "^5.1.0",
     "helmet": "^8.1.0",

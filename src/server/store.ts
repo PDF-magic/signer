@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { SignatureManifestV1 } from "../shared/types";
+import type { SignatureManifestV2 } from "../shared/types";
 
 export interface StoredSignatureRecord {
   id: string;
-  manifest: SignatureManifestV1;
+  manifest: SignatureManifestV2;
   signature: string;
   canonicalMessage: string;
   serverReceivedAt: string;
@@ -50,7 +50,10 @@ export async function saveRecordAtomic(
 ): Promise<void> {
   assertValidId(record.id);
   const finalDir = recordDirectory(record.id);
-  const tempDir = path.join(recordsRoot(), "." + record.id + "." + randomBytes(5).toString("hex") + ".tmp");
+  const tempDir = path.join(
+    recordsRoot(),
+    "." + record.id + "." + randomBytes(5).toString("hex") + ".tmp",
+  );
 
   await mkdir(tempDir, { recursive: false });
   try {

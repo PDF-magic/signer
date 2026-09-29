@@ -1,42 +1,63 @@
 # Stellar PDF Signer
 
-A small full-stack document signer built around [Stellar SEP-53](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0053.md).
+A full-stack document signer built around [Stellar SEP-53](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0053.md).
 
-The app does **not** submit a transaction or store private keys. A browser wallet signs one human-readable message that binds the PDF hash, claimed signing time, display name, Stellar public key, and optional insignia hash. The server independently verifies the signature and file hashes before issuing a permanent share URL.
+The app is deliberately off-chain: there is no Stellar transaction and the server never receives a secret key. Users choose a wallet through Stellar Wallets Kit, review the PDF, and sign one canonical message. The server then checks the actual wallet public key, verifies the SEP-53 signature, and confirms the key's signer authority for the represented account through SDF Horizon before publishing a share URL.
 
 ## Signing flow
 
-1. Connect Freighter.
-2. Pick a PDF and optionally a PNG/JPEG/WebP insignia.
-3. The browser computes SHA-256 locally.
-4. The app constructs a versioned canonical message.
-5. Freighter signs that message using SEP-53.
-6. The server recomputes both hashes, reconstructs the message, verifies the Ed25519 signature, and only then stores the proof.
-7. The share page rechecks the stored files and signature whenever the proof metadata is loaded.
+1. **Choose a wallet.** Stellar Wallets Kit presents the supported-wallet picker instead of assuming Freighter.
+2. **Choose the represented account.** This can be the wallet's own account or another G-account for which the wallet key is an added signer.
+3. **Verify authority.** The server loads the represented account from Horizon and checks that the wallet public key appears in its signer list with non-zero weight.
+4. **Review the document.** The exact PDF is shown in the signing view and SHA-256 hashed locally.
+5. **Review the identity.** A display name and optional PNG/JPEG/WebP visual insignia can be attached.
+6. **Sign.** Immediately before signing, the app fetches the wallet address again. After SEP-53 signing, it checks any signer address returned by the wallet against the key that was reviewed.
+7. **Recheck on the server.** The server verifies the signature and file hashes, reloads the Horizon account, and rejects the request if signer weights, thresholds, or the account-state ledger changed after review.
+8. **Share the proof.** The public page shows the PDF and a signer-authority badge such as **“Medium-weight signer for GAAAA…BBBB”**. The raw signing key remains in the verification details instead of being the primary identity label.
 
-A canonical message looks like:
+## Signed format
+
+Version 2 binds the signer relationship itself into the SEP-53 message:
 
 ~~~text
-Stellar PDF Signature v1
+Stellar PDF Signature v2
 document-sha256:<64 lowercase hex characters>
 signed-at:2026-09-29T00:00:00.000Z
 signer-name:Windsor Flight
 signer-public-key:G...
+represented-account:G...
+signer-weight:10
+low-threshold:1
+medium-threshold:5
+high-threshold:20
+account-last-modified-ledger:123456
 insignia-sha256:<64 lowercase hex characters or ->
 ~~~
 
-SEP-53 itself prefixes that UTF-8 message with "Stellar Signed Message:\n", hashes the result once with SHA-256, and signs the digest with Ed25519.
+The authority label is derived from the strongest **non-zero** account threshold that the individual signer weight satisfies. Default zero thresholds therefore do not incorrectly turn every signer into a “high-weight” signer.
+
+SEP-53 prefixes the UTF-8 message with `Stellar Signed Message:\n`, hashes that byte sequence with SHA-256, and verifies the Ed25519 signature against the recorded wallet key.
+
+## Why Horizon
+
+Classic Stellar account signer weights and low/medium/high thresholds are account state, so Horizon is the straightforward source for this app. The default endpoint is SDF Horizon:
+
+~~~text
+https://horizon.stellar.org
+~~~
+
+Override it with `HORIZON_URL` if the deployment uses another Horizon service.
 
 ## Run locally
 
-Requires Node 22 or newer and the Freighter browser extension.
+Requires Node 22 or newer.
 
 ~~~sh
 npm install
 npm run dev
 ~~~
 
-Open http://localhost:3000.
+Open `http://localhost:3000`.
 
 Useful checks:
 
@@ -47,13 +68,11 @@ npm run build
 npm start
 ~~~
 
-The test suite includes the official SEP-53 ASCII test vector and a tampering test.
-
 ## Persistence
 
-By default records live under ./data/records/<id>/. Each record directory contains the original PDF, optional insignia, and a JSON proof record. Writes are staged in a temporary directory and renamed into place only after the files and metadata are complete.
+Records live under `./data/records/<id>/` by default. Each directory contains the original PDF, optional visual insignia, and the JSON proof record. Writes are staged and renamed into place atomically.
 
-Set DATA_DIR to move persistent storage elsewhere. The application does not require a database because public records are addressed directly by their random 96-bit share id.
+Set `DATA_DIR` to move persistent storage elsewhere. Public records are addressed by random 96-bit share IDs.
 
 ## Docker
 
@@ -61,31 +80,27 @@ Set DATA_DIR to move persistent storage elsewhere. The application does not requ
 docker compose up --build
 ~~~
 
-The Compose file mounts a named volume at /app/data.
-
-For a public deployment, put the container behind HTTPS and set:
+For a public deployment, put the service behind HTTPS and set:
 
 ~~~text
 PUBLIC_BASE_URL=https://sign.example.org
+HORIZON_URL=https://horizon.stellar.org
 ~~~
-
-This makes generated share and proof URLs use the canonical public origin.
 
 ## HTTP API
 
-- POST /api/signatures — multipart form with document, optional insignia, manifest, and signature
-- GET /api/signatures/:id — verified public metadata
-- GET /api/signatures/:id/document — original PDF
-- GET /api/signatures/:id/insignia — optional insignia
-- GET /api/signatures/:id/proof — downloadable JSON proof
-- GET /api/health — health check
+- `GET /api/accounts/:account/signers/:signer` — resolve one wallet key's signer weight and threshold level through Horizon
+- `POST /api/signatures` — verify and publish a signed PDF
+- `GET /api/signatures/:id` — verified public metadata
+- `GET /api/signatures/:id/document` — original PDF
+- `GET /api/signatures/:id/insignia` — optional visual insignia
+- `GET /api/signatures/:id/proof` — downloadable JSON proof
+- `GET /api/health` — health check
 
-## Timestamp semantics
+## Authority and timestamp semantics
 
-The signedAt timestamp is inside the signed message, so it cannot be altered without invalidating the signature. It is still only a claim made by the signer. serverReceivedAt records when this server accepted the already-valid proof, but the server is not a trusted timestamp authority.
+“Medium-weight signer,” “high-weight signer,” and similar labels describe the signer weight relative to the represented account's threshold configuration at the Horizon account-state ledger captured in the signed message. The signer configuration can change later; the proof preserves what was checked when the signature was created.
 
-If cryptographically independent proof-of-existence time is ever needed, that can be added separately without changing the core SEP-53 document signature model.
+Likewise, `signedAt` is cryptographically protected but is still a timestamp claim made by the signer. `serverReceivedAt` records when this server accepted the valid proof. Neither is a trusted timestamp authority.
 
-## Security
-
-See [SECURITY.md](./SECURITY.md). The important boundary is simple: **the private key stays in the wallet**. The server receives only the public key, signature, canonical message metadata, PDF, and optional insignia.
+See [SECURITY.md](./SECURITY.md) for the full trust model.

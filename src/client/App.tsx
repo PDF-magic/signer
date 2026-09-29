@@ -1,14 +1,40 @@
 import { useEffect, useMemo, useState } from "react";
-import { requestAccess, signMessage } from "@stellar/freighter-api";
-import { canonicalizeManifest, sha256Hex, shortKey } from "../shared/signature";
-import type { PublicSignatureRecord, SignatureManifestV1 } from "../shared/types";
+import { StellarWalletsKit } from "@creit.tech/stellar-wallets-kit/sdk";
+import { defaultModules } from "@creit.tech/stellar-wallets-kit/modules/utils";
+import {
+  authorityLabel,
+  canonicalizeManifest,
+  sha256Hex,
+  shortKey,
+  STELLAR_PUBLIC_KEY,
+} from "../shared/signature";
+import type {
+  PublicSignatureRecord,
+  SignatureManifestV2,
+  SignerAuthorityStatus,
+} from "../shared/types";
 
-function apiError(value: unknown): string | null {
-  if (value && typeof value === "object" && "error" in value && (value as { error?: unknown }).error) {
-    const error = (value as { error: { message?: string } }).error;
-    return error.message || "Wallet request failed.";
+let walletKitInitialized = false;
+
+function ensureWalletKit(): void {
+  if (walletKitInitialized) return;
+  StellarWalletsKit.init({
+    modules: defaultModules(),
+    authModal: {
+      showInstallLabel: true,
+      hideUnsupportedWallets: false,
+    },
+  });
+  walletKitInitialized = true;
+}
+
+function errorMessage(value: unknown): string {
+  if (value instanceof Error) return value.message;
+  if (value && typeof value === "object" && "message" in value) {
+    const message = (value as { message?: unknown }).message;
+    if (typeof message === "string") return message;
   }
-  return null;
+  return "Wallet request failed.";
 }
 
 async function copy(value: string): Promise<void> {
@@ -17,14 +43,23 @@ async function copy(value: string): Promise<void> {
 
 function HomePage() {
   const [address, setAddress] = useState("");
+  const [walletName, setWalletName] = useState("");
+  const [representedAccount, setRepresentedAccount] = useState("");
+  const [authority, setAuthority] = useState<SignerAuthorityStatus | null>(null);
+  const [authorityError, setAuthorityError] = useState("");
   const [signerName, setSignerName] = useState("");
   const [document, setDocument] = useState<File | null>(null);
+  const [documentPreviewUrl, setDocumentPreviewUrl] = useState("");
   const [insignia, setInsignia] = useState<File | null>(null);
   const [documentHash, setDocumentHash] = useState("");
   const [insigniaHash, setInsigniaHash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    ensureWalletKit();
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -41,6 +76,16 @@ function HomePage() {
   }, [document]);
 
   useEffect(() => {
+    if (!document) {
+      setDocumentPreviewUrl("");
+      return;
+    }
+    const url = URL.createObjectURL(document);
+    setDocumentPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [document]);
+
+  useEffect(() => {
     let active = true;
     if (!insignia) {
       setInsigniaHash(null);
@@ -54,15 +99,51 @@ function HomePage() {
     };
   }, [insignia]);
 
+  useEffect(() => {
+    const account = representedAccount.trim().toUpperCase();
+    if (!address || !STELLAR_PUBLIC_KEY.test(account) || !STELLAR_PUBLIC_KEY.test(address)) {
+      setAuthority(null);
+      setAuthorityError("");
+      return;
+    }
+
+    const controller = new AbortController();
+    setAuthority(null);
+    setAuthorityError("Checking signer authority with Stellar Horizon…");
+
+    void fetch(
+      "/api/accounts/" + encodeURIComponent(account) + "/signers/" + encodeURIComponent(address),
+      { signal: controller.signal },
+    )
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || "Unable to verify signer authority.");
+        return body as SignerAuthorityStatus;
+      })
+      .then((result) => {
+        setAuthority(result);
+        setAuthorityError("");
+      })
+      .catch((cause) => {
+        if (controller.signal.aborted) return;
+        setAuthority(null);
+        setAuthorityError(cause instanceof Error ? cause.message : "Unable to verify signer authority.");
+      });
+
+    return () => controller.abort();
+  }, [address, representedAccount]);
+
   const previewMessage = useMemo(() => {
-    if (!address || !documentHash || !signerName.trim()) return "";
+    if (!address || !documentHash || !signerName.trim() || !authority) return "";
     const placeholderTime = new Date(0).toISOString();
-    const manifest: SignatureManifestV1 = {
-      version: 1,
+    const manifest: SignatureManifestV2 = {
+      version: 2,
       documentSha256: documentHash,
       signedAt: placeholderTime,
       signerName: signerName.trim(),
       signerPublicKey: address,
+      representedAccount: authority.representedAccount,
+      authority: authority.authority,
       insigniaSha256: insigniaHash,
     };
     try {
@@ -73,19 +154,25 @@ function HomePage() {
     } catch {
       return "";
     }
-  }, [address, documentHash, insigniaHash, signerName]);
+  }, [address, authority, documentHash, insigniaHash, signerName]);
 
-  async function connectWallet() {
+  async function chooseWallet() {
     setError("");
+    setStatus("");
     try {
-      const result = await requestAccess();
-      const walletError = apiError(result);
-      if (walletError) throw new Error(walletError);
-      const nextAddress = (result as { address?: string }).address;
-      if (!nextAddress) throw new Error("Freighter did not return an address.");
+      ensureWalletKit();
+      const previousAddress = address;
+      const result = await StellarWalletsKit.authModal();
+      const nextAddress = result.address;
       setAddress(nextAddress);
+      setWalletName(StellarWalletsKit.selectedModule.productName);
+      setRepresentedAccount((current) => {
+        const normalized = current.trim().toUpperCase();
+        return !normalized || normalized === previousAddress ? nextAddress : current;
+      });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to connect to Freighter.");
+      const message = errorMessage(cause);
+      if (!message.toLowerCase().includes("closed")) setError(message);
     }
   }
 
@@ -94,7 +181,11 @@ function HomePage() {
     setStatus("");
 
     if (!address) {
-      setError("Connect Freighter first.");
+      setError("Choose a wallet first.");
+      return;
+    }
+    if (!authority) {
+      setError("The wallet key must be verified as a signer for the represented Stellar account.");
       return;
     }
     if (!document || !documentHash) {
@@ -116,32 +207,45 @@ function HomePage() {
 
     setBusy(true);
     try {
-      const manifest: SignatureManifestV1 = {
-        version: 1,
+      const fresh = await StellarWalletsKit.fetchAddress();
+      if (fresh.address !== address) {
+        const oldAddress = address;
+        setAddress(fresh.address);
+        if (representedAccount.trim().toUpperCase() === oldAddress) {
+          setRepresentedAccount(fresh.address);
+        }
+        throw new Error("The wallet account changed. Its signer authority is being rechecked before you sign.");
+      }
+
+      const manifest: SignatureManifestV2 = {
+        version: 2,
         documentSha256: documentHash,
         signedAt: new Date().toISOString(),
         signerName: signerName.trim(),
         signerPublicKey: address,
+        representedAccount: authority.representedAccount,
+        authority: authority.authority,
         insigniaSha256: insigniaHash,
       };
       const message = canonicalizeManifest(manifest);
 
-      setStatus("Waiting for your SEP-53 signature in Freighter…");
-      const result = await signMessage(message, { address });
-      const walletError = apiError(result);
-      if (walletError) throw new Error(walletError);
+      setStatus("Waiting for " + (walletName || "your wallet") + " to sign the SEP-53 message…");
+      const result = await StellarWalletsKit.signMessage(message, { address });
+      if (!result.signedMessage) throw new Error("The wallet did not return a message signature.");
 
-      const signedMessage = (result as { signedMessage?: string }).signedMessage;
-      const signerAddress = (result as { signerAddress?: string }).signerAddress;
-      if (!signedMessage) throw new Error("Freighter did not return a signature.");
-      if (signerAddress && signerAddress !== address) {
-        throw new Error("Freighter signed with a different address than the connected account.");
+      const actualSigner = result.signerAddress || fresh.address;
+      if (actualSigner !== address) {
+        throw new Error(
+          "The wallet signed with " +
+            shortKey(actualSigner) +
+            ", not the public key that was reviewed. Reconnect that signer and try again.",
+        );
       }
 
-      setStatus("Verifying and publishing the proof…");
+      setStatus("Checking the returned public key and publishing the proof…");
       const form = new FormData();
       form.set("manifest", JSON.stringify(manifest));
-      form.set("signature", signedMessage);
+      form.set("signature", result.signedMessage);
       form.set("document", document);
       if (insignia) form.set("insignia", insignia);
 
@@ -153,7 +257,7 @@ function HomePage() {
 
       window.location.assign((body as PublicSignatureRecord).shareUrl);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Signing failed.");
+      setError(errorMessage(cause));
       setStatus("");
       setBusy(false);
     }
@@ -166,37 +270,82 @@ function HomePage() {
         <span className="pill">SEP-53 · off-chain</span>
       </header>
 
-      <section className="hero">
+      <section className="hero compact-hero">
         <div>
-          <p className="eyebrow">Cryptographic document signatures</p>
-          <h1>Sign the document hash. Share the proof.</h1>
+          <p className="eyebrow">Signing request</p>
+          <h1>Review the document. Choose the key that signs it.</h1>
           <p className="lede">
-            Your private key never leaves your wallet. The public page binds the PDF,
-            your displayed name, optional insignia, claimed signing time, and Stellar
-            public key into one independently verifiable SEP-53 signature.
+            The app verifies the wallet's actual public key against the represented Stellar
+            account before it accepts the signature.
           </p>
         </div>
-        <div className="protocol-card">
-          <div className="protocol-row"><span>Network transaction</span><strong>None</strong></div>
-          <div className="protocol-row"><span>Signature</span><strong>Ed25519</strong></div>
-          <div className="protocol-row"><span>Hash</span><strong>SHA-256</strong></div>
-          <div className="protocol-row"><span>Standard</span><strong>SEP-53</strong></div>
+      </section>
+
+      <section className="panel wallet-stage">
+        <div className="step">
+          <span className="step-number">1</span>
+          <div>
+            <h2>Choose your wallet</h2>
+            <p>Pick any supported Stellar wallet that can sign an arbitrary message.</p>
+          </div>
         </div>
+
+        <div className="wallet-row">
+          <button className="wallet-button wallet-picker" type="button" onClick={chooseWallet}>
+            {address ? "Switch wallet" : "Choose wallet"}
+          </button>
+          <div className="wallet-summary">
+            {address ? (
+              <>
+                <strong>{walletName || "Connected wallet"}</strong>
+                <span>{shortKey(address)}</span>
+              </>
+            ) : (
+              <>
+                <strong>No wallet selected</strong>
+                <span>Your secret key never enters this site.</span>
+              </>
+            )}
+          </div>
+        </div>
+
+        {address && (
+          <div className="account-check">
+            <label>
+              Stellar account this signature represents
+              <input
+                value={representedAccount}
+                onChange={(event) => setRepresentedAccount(event.target.value.toUpperCase())}
+                maxLength={56}
+                spellCheck={false}
+                placeholder="G…"
+              />
+            </label>
+
+            {authority && (
+              <div className={"authority-badge " + authority.authorityLevel}>
+                <span className="authority-dot" />
+                <strong>{authorityLabel(authority.representedAccount, authority.authority)}</strong>
+                <small>
+                  key weight {authority.authority.signerWeight} · account state ledger{" "}
+                  {authority.authority.lastModifiedLedger.toLocaleString()}
+                </small>
+              </div>
+            )}
+            {authorityError && <div className={authority ? "notice" : "notice warning"}>{authorityError}</div>}
+          </div>
+        )}
       </section>
 
       <section className="panel signer-grid">
         <div className="form-column">
           <div className="step">
-            <span className="step-number">1</span>
+            <span className="step-number">2</span>
             <div>
-              <h2>Signer</h2>
-              <p>Connect Freighter and choose the public name shown on the proof.</p>
+              <h2>Signing identity</h2>
+              <p>This name and optional visual insignia are bound into the signed statement.</p>
             </div>
           </div>
-
-          <button className="wallet-button" type="button" onClick={connectWallet}>
-            {address ? "Connected · " + shortKey(address) : "Connect Freighter"}
-          </button>
 
           <label>
             Display name
@@ -209,11 +358,20 @@ function HomePage() {
             />
           </label>
 
+          <label className="file-field">
+            Visual insignia <span className="muted">(optional)</span>
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={(event) => setInsignia(event.target.files?.[0] ?? null)}
+            />
+          </label>
+
           <div className="step spaced">
-            <span className="step-number">2</span>
+            <span className="step-number">3</span>
             <div>
               <h2>Document</h2>
-              <p>The PDF is hashed locally before the wallet is asked to sign.</p>
+              <p>The exact PDF bytes are SHA-256 hashed locally before signing.</p>
             </div>
           </div>
 
@@ -231,35 +389,31 @@ function HomePage() {
               <code>{documentHash || "hashing…"}</code>
             </div>
           )}
-
-          <label className="file-field">
-            Insignia <span className="muted">(optional)</span>
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              onChange={(event) => setInsignia(event.target.files?.[0] ?? null)}
-            />
-          </label>
-          {insignia && (
-            <div className="file-chip">
-              <span>{insignia.name}</span>
-              <code>{insigniaHash || "hashing…"}</code>
-            </div>
-          )}
         </div>
 
         <div className="review-column">
           <div className="step">
-            <span className="step-number">3</span>
+            <span className="step-number">4</span>
             <div>
               <h2>Review & sign</h2>
-              <p>Freighter will show the canonical message. The real timestamp is inserted at signing.</p>
+              <p>Read the request here, then approve the exact canonical message in your wallet.</p>
             </div>
           </div>
 
-          <pre className="message-preview">
-            {previewMessage || "Complete the signer and document fields to preview the message."}
-          </pre>
+          {documentPreviewUrl ? (
+            <div className="request-preview">
+              <iframe src={documentPreviewUrl} title={document?.name || "Signing request"} />
+            </div>
+          ) : (
+            <div className="request-placeholder">Choose a PDF to preview the signing request.</div>
+          )}
+
+          <details className="message-details">
+            <summary>Exact message your wallet will sign</summary>
+            <pre className="message-preview compact">
+              {previewMessage || "Complete the wallet, signer authority, identity, and document fields first."}
+            </pre>
+          </details>
 
           {error && <div className="notice error">{error}</div>}
           {status && <div className="notice">{status}</div>}
@@ -267,14 +421,14 @@ function HomePage() {
           <button
             className="primary-button"
             type="button"
-            disabled={busy || !address || !documentHash || !signerName.trim()}
+            disabled={busy || !address || !authority || !documentHash || !signerName.trim()}
             onClick={submitSignature}
           >
-            {busy ? "Signing…" : "Sign & publish"}
+            {busy ? "Signing…" : "Sign document"}
           </button>
           <p className="fineprint">
-            The signing time is a signed claim. The server also records when it received
-            the proof, but neither is a trusted timestamp authority.
+            Horizon is used to confirm the wallet key's signer weight and thresholds for the
+            represented account. The signature itself remains entirely off-chain.
           </p>
         </div>
       </section>
@@ -329,9 +483,10 @@ function SharePage({ id }: { id: string }) {
           <div>
             <p className="eyebrow">Signed by</p>
             <h1>{record.signerName}</h1>
-            <button className="key-button" onClick={() => void copy(record.signerPublicKey)}>
-              {shortKey(record.signerPublicKey)} · copy key
-            </button>
+            <div className={"authority-badge public " + record.authorityLevel}>
+              <span className="authority-dot" />
+              <strong>{authorityLabel(record.representedAccount, record.authority)}</strong>
+            </div>
           </div>
         </div>
         <div className="actions">
@@ -361,6 +516,23 @@ function SharePage({ id }: { id: string }) {
           <hr />
 
           <dl>
+            <dt>Represented Stellar account</dt>
+            <dd><code>{record.representedAccount}</code></dd>
+            <dt>Actual signing public key</dt>
+            <dd>
+              <button className="raw-key" onClick={() => void copy(record.signerPublicKey)}>
+                <code>{record.signerPublicKey}</code>
+              </button>
+            </dd>
+            <dt>Signer weight</dt>
+            <dd>{record.authority.signerWeight}</dd>
+            <dt>Account thresholds</dt>
+            <dd>
+              low {record.authority.lowThreshold} · medium {record.authority.mediumThreshold} · high{" "}
+              {record.authority.highThreshold}
+            </dd>
+            <dt>Horizon account-state ledger</dt>
+            <dd>{record.authority.lastModifiedLedger.toLocaleString()}</dd>
             <dt>Claimed signed at</dt>
             <dd>{new Date(record.signedAt).toLocaleString()}</dd>
             <dt>Server received at</dt>
@@ -379,9 +551,8 @@ function SharePage({ id }: { id: string }) {
           </details>
 
           <p className="fineprint">
-            Verification proves control of the private key corresponding to the displayed
-            Stellar G-address. It does not by itself prove legal identity or full control
-            of a multisignature Stellar account.
+            The large signer label comes from the Horizon signer weight and account thresholds
+            captured in the signed statement. The raw key stays available here for independent verification.
           </p>
         </aside>
       </section>

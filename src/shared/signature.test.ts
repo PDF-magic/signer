@@ -1,26 +1,68 @@
 import { describe, expect, it } from "vitest";
-import { canonicalizeManifest, sha256Hex } from "./signature";
-import type { SignatureManifestV1 } from "./types";
+import {
+  authorityLabel,
+  authorityLevel,
+  canonicalizeManifest,
+  sha256Hex,
+} from "./signature";
+import type { SignatureManifestV2, SignerAuthoritySnapshot } from "./types";
 import { verifySep53 } from "../server/stellar";
 
-const manifest: SignatureManifestV1 = {
-  version: 1,
+const authority: SignerAuthoritySnapshot = {
+  signerWeight: 10,
+  lowThreshold: 1,
+  mediumThreshold: 5,
+  highThreshold: 20,
+  lastModifiedLedger: 123456,
+};
+
+const manifest: SignatureManifestV2 = {
+  version: 2,
   documentSha256: "a".repeat(64),
   signedAt: "2026-09-29T00:00:00.000Z",
   signerName: "Windsor Flight",
   signerPublicKey: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+  representedAccount: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+  authority,
   insigniaSha256: null,
 };
 
+describe("signer authority", () => {
+  it("labels the strongest non-zero threshold one signer can meet", () => {
+    expect(authorityLevel(authority)).toBe("medium");
+    expect(authorityLabel(manifest.representedAccount, authority)).toBe(
+      "Medium-weight signer for GAAAAAAA…AAAAWHF",
+    );
+  });
+
+  it("does not promote default zero thresholds into a high-weight label", () => {
+    expect(
+      authorityLevel({
+        signerWeight: 1,
+        lowThreshold: 0,
+        mediumThreshold: 0,
+        highThreshold: 0,
+        lastModifiedLedger: 1,
+      }),
+    ).toBe("signer");
+  });
+});
+
 describe("signature manifest", () => {
-  it("canonicalizes fields in a stable human-readable order", () => {
+  it("canonicalizes signer authority and represented account into the signed message", () => {
     expect(canonicalizeManifest(manifest)).toBe(
       [
-        "Stellar PDF Signature v1",
+        "Stellar PDF Signature v2",
         "document-sha256:" + "a".repeat(64),
         "signed-at:2026-09-29T00:00:00.000Z",
         "signer-name:Windsor Flight",
         "signer-public-key:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        "represented-account:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        "signer-weight:10",
+        "low-threshold:1",
+        "medium-threshold:5",
+        "high-threshold:20",
+        "account-last-modified-ledger:123456",
         "insignia-sha256:-",
         "",
       ].join("\n"),

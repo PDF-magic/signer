@@ -5,8 +5,17 @@ import express from "express";
 import helmet from "helmet";
 import multer from "multer";
 import { z } from "zod";
-import { canonicalizeManifest } from "../shared/signature";
-import type { PublicSignatureRecord, SignatureManifestV1, VerificationChecks } from "../shared/types";
+import { authorityLevel, canonicalizeManifest } from "../shared/signature";
+import type {
+  PublicSignatureRecord,
+  SignatureManifestV2,
+  VerificationChecks,
+} from "../shared/types";
+import {
+  authoritySnapshotsEqual,
+  HorizonLookupError,
+  resolveSignerAuthority,
+} from "./horizon";
 import {
   assetPath,
   createId,
@@ -33,14 +42,15 @@ app.use(
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: maxUploadBytes, files: 2, fields: 4 },
+  limits: { fileSize: maxUploadBytes, files: 2, fields: 5 },
 });
 
 const hashPattern = /^[0-9a-f]{64}$/;
 const publicKeyPattern = /^G[A-Z2-7]{55}$/;
+const byteWeight = z.number().int().min(0).max(255);
 
 const manifestSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   documentSha256: z.string().regex(hashPattern),
   signedAt: z.string().refine((value) => {
     const parsed = new Date(value);
@@ -53,6 +63,14 @@ const manifestSchema = z.object({
     .max(120)
     .refine((value) => !/[\r\n]/.test(value), "signerName cannot contain line breaks"),
   signerPublicKey: z.string().regex(publicKeyPattern),
+  representedAccount: z.string().regex(publicKeyPattern),
+  authority: z.object({
+    signerWeight: byteWeight.min(1),
+    lowThreshold: byteWeight,
+    mediumThreshold: byteWeight,
+    highThreshold: byteWeight,
+    lastModifiedLedger: z.number().int().nonnegative(),
+  }),
   insigniaSha256: z.string().regex(hashPattern).nullable(),
 });
 
@@ -116,6 +134,9 @@ function toPublicRecord(
     id: record.id,
     signerName: record.manifest.signerName,
     signerPublicKey: record.manifest.signerPublicKey,
+    representedAccount: record.manifest.representedAccount,
+    authority: record.manifest.authority,
+    authorityLevel: authorityLevel(record.manifest.authority),
     signedAt: record.manifest.signedAt,
     serverReceivedAt: record.serverReceivedAt,
     documentSha256: record.manifest.documentSha256,
@@ -136,6 +157,15 @@ function toPublicRecord(
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "stellar-pdf-signer" });
+});
+
+app.get("/api/accounts/:account/signers/:signer", async (req, res, next) => {
+  try {
+    const status = await resolveSignerAuthority(req.params.account, req.params.signer);
+    res.json(status);
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post(
@@ -171,7 +201,7 @@ app.post(
         return;
       }
 
-      const manifest = manifestSchema.parse(parsedManifest) as SignatureManifestV1;
+      const manifest = manifestSchema.parse(parsedManifest) as SignatureManifestV2;
       const actualDocumentHash = sha256(document.buffer);
       if (actualDocumentHash !== manifest.documentSha256) {
         res.status(400).json({ error: "Document hash does not match the signed manifest." });
@@ -194,7 +224,18 @@ app.post(
 
       const canonicalMessage = canonicalizeManifest(manifest);
       if (!verifySep53(manifest.signerPublicKey, canonicalMessage, req.body.signature)) {
-        res.status(400).json({ error: "SEP-53 signature verification failed." });
+        res.status(400).json({ error: "SEP-53 signature verification failed for the wallet public key." });
+        return;
+      }
+
+      const horizonAuthority = await resolveSignerAuthority(
+        manifest.representedAccount,
+        manifest.signerPublicKey,
+      );
+      if (!authoritySnapshotsEqual(manifest.authority, horizonAuthority.authority)) {
+        res.status(409).json({
+          error: "The Stellar signer configuration changed after review. Recheck the account and sign again.",
+        });
         return;
       }
 
@@ -247,7 +288,7 @@ app.get("/api/signatures/:id/proof", async (req, res, next) => {
     const checks = await verifyStoredRecord(record);
     const publicRecord = toPublicRecord(req, record, checks);
     res.setHeader("Content-Disposition", 'attachment; filename="stellar-signature-' + record.id + '.json"');
-    res.json({ format: "stellar-pdf-signature", version: 1, sep: 53, ...publicRecord });
+    res.json({ format: "stellar-pdf-signature", version: 2, sep: 53, ...publicRecord });
   } catch (error) {
     next(error);
   }
@@ -262,7 +303,10 @@ app.get("/api/signatures/:id/document", async (req, res, next) => {
     }
     res.type("application/pdf");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Content-Disposition", 'inline; filename="' + record.documentFilename.replace(/"/g, "_") + '"');
+    res.setHeader(
+      "Content-Disposition",
+      'inline; filename="' + record.documentFilename.replace(/"/g, "_") + '"',
+    );
     res.sendFile(assetPath(record.id, record.documentFile));
   } catch (error) {
     next(error);
@@ -286,10 +330,15 @@ app.get("/api/signatures/:id/insignia", async (req, res, next) => {
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (error instanceof multer.MulterError) {
-    const message = error.code === "LIMIT_FILE_SIZE"
-      ? "Upload exceeds the " + maxUploadMb + " MB limit."
-      : error.message;
+    const message =
+      error.code === "LIMIT_FILE_SIZE"
+        ? "Upload exceeds the " + maxUploadMb + " MB limit."
+        : error.message;
     res.status(400).json({ error: message });
+    return;
+  }
+  if (error instanceof HorizonLookupError) {
+    res.status(error.statusCode).json({ error: error.message });
     return;
   }
   if (error instanceof z.ZodError) {
@@ -299,6 +348,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
     });
     return;
   }
+
   console.error(error);
   res.status(500).json({ error: "Internal server error." });
 });
@@ -317,7 +367,10 @@ if (process.env.NODE_ENV === "production") {
   });
 } else {
   const { createServer: createViteServer } = await import("vite");
-  const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+  const vite = await createViteServer({
+    server: { middlewareMode: true },
+    appType: "spa",
+  });
   app.use(vite.middlewares);
 }
 
