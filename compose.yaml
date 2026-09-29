@@ -1,0 +1,16 @@
+services:
+  signer:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      DATA_DIR: /app/data
+      MAX_UPLOAD_MB: "25"
+      # PUBLIC_BASE_URL: https://sign.example.org
+    volumes:
+      - signer-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  signer-data:
