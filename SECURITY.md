@@ -11,10 +11,10 @@ A valid proof establishes that the private key corresponding to the recorded Ste
 - the displayed signer name;
 - the actual wallet public key reviewed before signing;
 - the represented Stellar account;
-- a Horizon snapshot of that key's signer weight, account thresholds, and account-state ledger;
+- a Stellar RPC snapshot of that key's signer weight, account thresholds, and account-state ledger;
 - the SHA-256 hash of the optional visual insignia.
 
-Before accepting a signature, the server fetches the represented account from Stellar Horizon and confirms that the wallet public key is an active signer with non-zero weight. The signed Horizon snapshot must still match when the server receives the signature.
+Before accepting a signature, the server reads the represented account ledger entry through Stellar RPC and confirms that the wallet public key is an active signer with non-zero weight. The signed RPC snapshot must still match when the server receives the signature.
 
 The server also recomputes the PDF and insignia hashes before accepting a record and whenever the public proof API is loaded.
 
@@ -26,4 +26,4 @@ The server also recomputes the PDF and insignia hashes before accepting a record
 - Public share URLs are not an access-control system. Anyone with the URL can view the uploaded PDF.
 - A signer can later be removed or its weight/thresholds can change. The proof preserves the signer configuration that was checked and signed at creation time.
 
-Run the service behind HTTPS in production. Treat uploaded documents as public-by-link and apply your own authentication, retention, malware scanning, rate limiting, Horizon availability controls, and backup policies when the deployment requires them.
+Run the service behind HTTPS in production. Treat uploaded documents as public-by-link and apply your own authentication, retention, malware scanning, rate limiting, Stellar RPC availability controls, and backup policies when the deployment requires them.
