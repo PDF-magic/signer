@@ -7,6 +7,7 @@ services:
       PORT: "3000"
       DATA_DIR: /app/data
       MAX_UPLOAD_MB: "25"
+      STELLAR_RPC_URL: https://mainnet.sorobanrpc.com
       # PUBLIC_BASE_URL: https://sign.example.org
     volumes:
       - signer-data:/app/data
