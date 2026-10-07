@@ -32,6 +32,15 @@ export interface VerificationChecks {
   insigniaHash: boolean;
 }
 
+export interface SorobanAnchorReceipt {
+  network: "mainnet";
+  contractId: string;
+  transactionHash: string;
+  ledger: number;
+  proofSha256: string;
+  serverConfirmedAt: string;
+}
+
 export interface PublicSignatureRecord {
   id: string;
   signerName: string;
@@ -48,6 +57,7 @@ export interface PublicSignatureRecord {
   insigniaMimeType: string | null;
   signature: string;
   canonicalMessage: string;
+  anchor: SorobanAnchorReceipt | null;
   verified: boolean;
   checks: VerificationChecks;
   documentUrl: string;

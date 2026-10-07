@@ -56,9 +56,18 @@ function HomePage() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [anchorEnabled, setAnchorEnabled] = useState(false);
+  const [anchorOnMainnet, setAnchorOnMainnet] = useState(false);
 
   useEffect(() => {
     ensureWalletKit();
+    void fetch("/api/config")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load deployment configuration.");
+        return response.json() as Promise<{ sorobanAnchorEnabled?: boolean }>;
+      })
+      .then((config) => setAnchorEnabled(Boolean(config.sorobanAnchorEnabled)))
+      .catch(() => setAnchorEnabled(false));
   }, []);
 
   useEffect(() => {
@@ -242,10 +251,15 @@ function HomePage() {
         );
       }
 
-      setStatus("Checking the returned public key and publishing the proof…");
+      setStatus(
+        anchorOnMainnet
+          ? "Publishing the proof and anchoring its digest on Stellar mainnet…"
+          : "Checking the returned public key and publishing the proof…",
+      );
       const form = new FormData();
       form.set("manifest", JSON.stringify(manifest));
       form.set("signature", result.signedMessage);
+      form.set("anchor", anchorOnMainnet ? "true" : "false");
       form.set("document", document);
       if (insignia) form.set("insignia", insignia);
 
@@ -418,6 +432,23 @@ function HomePage() {
           {error && <div className="notice error">{error}</div>}
           {status && <div className="notice">{status}</div>}
 
+          {anchorEnabled && (
+            <label className="file-field">
+              <span>
+                <input
+                  type="checkbox"
+                  checked={anchorOnMainnet}
+                  disabled={busy}
+                  onChange={(event) => setAnchorOnMainnet(event.target.checked)}
+                />{" "}
+                <strong>Anchor proof on Stellar mainnet</strong>
+              </span>
+              <span className="muted">
+                Publishes only a SHA-256 proof digest through Soroban; the PDF and identity stay off-chain.
+              </span>
+            </label>
+          )}
+
           <button
             className="primary-button"
             type="button"
@@ -500,6 +531,23 @@ function SharePage({ id }: { id: string }) {
         <div className="notice error">
           Do not rely on this proof. At least one stored byte sequence no longer matches the signed record.
         </div>
+      )}
+
+      {record.anchor && (
+        <section className="panel">
+          <p className="eyebrow">Soroban mainnet anchor</p>
+          <h2>Anchored at ledger {record.anchor.ledger.toLocaleString()}</h2>
+          <p>
+            Proof SHA-256 <code>{record.anchor.proofSha256}</code>
+          </p>
+          <a
+            href={"https://stellar.expert/explorer/public/tx/" + record.anchor.transactionHash}
+            target="_blank"
+            rel="noreferrer"
+          >
+            View mainnet transaction
+          </a>
+        </section>
       )}
 
       <section className="proof-layout">

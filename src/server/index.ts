@@ -25,6 +25,11 @@ import {
   type StoredSignatureRecord,
 } from "./store";
 import { signatureToBase64, verifySep53 } from "./stellar";
+import {
+  anchorProofOnMainnet,
+  proofAnchorDigest,
+  sorobanAnchorConfigured,
+} from "./soroban";
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -146,6 +151,7 @@ function toPublicRecord(
     insigniaMimeType: record.insigniaMimeType,
     signature: record.signature,
     canonicalMessage: record.canonicalMessage,
+    anchor: record.anchor ?? null,
     verified: checks.signature && checks.documentHash && checks.insigniaHash,
     checks,
     documentUrl: root + "/api/signatures/" + record.id + "/document",
@@ -157,6 +163,10 @@ function toPublicRecord(
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "stellar-pdf-signer" });
+});
+
+app.get("/api/config", (_req, res) => {
+  res.json({ sorobanAnchorEnabled: sorobanAnchorConfigured() });
 });
 
 app.get("/api/accounts/:account/signers/:signer", async (req, res, next) => {
@@ -190,6 +200,14 @@ app.post(
       }
       if (typeof req.body.manifest !== "string" || typeof req.body.signature !== "string") {
         res.status(400).json({ error: "manifest and signature fields are required." });
+        return;
+      }
+      if (
+        req.body.anchor !== undefined &&
+        req.body.anchor !== "true" &&
+        req.body.anchor !== "false"
+      ) {
+        res.status(400).json({ error: "anchor must be true or false." });
         return;
       }
 
@@ -240,6 +258,18 @@ app.post(
       }
 
       const signature = signatureToBase64(req.body.signature);
+      const anchorRequested = req.body.anchor === "true";
+      let anchor = null;
+      if (anchorRequested) {
+        if (!sorobanAnchorConfigured()) {
+          res.status(503).json({
+            error: "Soroban mainnet anchoring is not configured on this deployment.",
+          });
+          return;
+        }
+        anchor = await anchorProofOnMainnet(proofAnchorDigest(canonicalMessage, signature));
+      }
+
       const id = createId();
       const insigniaExtension = insignia ? acceptedInsigniaTypes.get(insignia.mimetype)! : null;
       const record: StoredSignatureRecord = {
@@ -247,6 +277,7 @@ app.post(
         manifest,
         signature,
         canonicalMessage,
+        anchor,
         serverReceivedAt: new Date().toISOString(),
         documentFilename: safeFilename(document.originalname),
         documentMimeType: "application/pdf",
