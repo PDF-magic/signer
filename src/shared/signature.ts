@@ -94,7 +94,9 @@ export function canonicalizeManifest(manifest: SignatureManifestV2): string {
 
 export async function sha256Hex(input: ArrayBuffer | Uint8Array): Promise<string> {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  const digestInput = new Uint8Array(bytes.byteLength);
+  digestInput.set(bytes);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", digestInput.buffer);
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
