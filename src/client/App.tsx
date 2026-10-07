@@ -118,7 +118,7 @@ function HomePage() {
 
     const controller = new AbortController();
     setAuthority(null);
-    setAuthorityError("Checking signer authority with Stellar Horizon…");
+    setAuthorityError("Checking signer authority with Stellar RPC…");
 
     void fetch(
       "/api/accounts/" + encodeURIComponent(account) + "/signers/" + encodeURIComponent(address),
@@ -367,7 +367,7 @@ function HomePage() {
               value={signerName}
               onChange={(event) => setSignerName(event.target.value)}
               maxLength={120}
-              placeholder="Windsor Flight"
+              placeholder="Example Signer"
               autoComplete="name"
             />
           </label>
@@ -458,8 +458,8 @@ function HomePage() {
             {busy ? "Signing…" : "Sign document"}
           </button>
           <p className="fineprint">
-            Horizon is used to confirm the wallet key's signer weight and thresholds for the
-            represented account. The signature itself remains entirely off-chain.
+            Stellar RPC is used to read the represented account's signer weights and thresholds
+            directly from its ledger entry. The signature itself remains entirely off-chain.
           </p>
         </div>
       </section>
@@ -579,7 +579,7 @@ function SharePage({ id }: { id: string }) {
               low {record.authority.lowThreshold} · medium {record.authority.mediumThreshold} · high{" "}
               {record.authority.highThreshold}
             </dd>
-            <dt>Horizon account-state ledger</dt>
+            <dt>Stellar RPC account-state ledger</dt>
             <dd>{record.authority.lastModifiedLedger.toLocaleString()}</dd>
             <dt>Claimed signed at</dt>
             <dd>{new Date(record.signedAt).toLocaleString()}</dd>
@@ -599,8 +599,8 @@ function SharePage({ id }: { id: string }) {
           </details>
 
           <p className="fineprint">
-            The large signer label comes from the Horizon signer weight and account thresholds
-            captured in the signed statement. The raw key stays available here for independent verification.
+            The large signer label comes from the signer weight and account thresholds read through Stellar RPC
+            and captured in the signed statement. The raw key stays available here for independent verification.
           </p>
         </aside>
       </section>
