@@ -69,7 +69,7 @@ export function validateManifestShape(manifest: SignatureManifestV2): void {
     !Number.isInteger(authority.lastModifiedLedger) ||
     authority.lastModifiedLedger < 0
   ) {
-    throw new Error("Invalid Horizon signer authority snapshot.");
+    throw new Error("Invalid Stellar signer authority snapshot.");
   }
 }
 
