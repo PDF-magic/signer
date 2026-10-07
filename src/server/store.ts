@@ -1,13 +1,14 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { SignatureManifestV2 } from "../shared/types";
+import type { SignatureManifestV2, SorobanAnchorReceipt } from "../shared/types";
 
 export interface StoredSignatureRecord {
   id: string;
   manifest: SignatureManifestV2;
   signature: string;
   canonicalMessage: string;
+  anchor: SorobanAnchorReceipt | null;
   serverReceivedAt: string;
   documentFilename: string;
   documentMimeType: string;

@@ -2,7 +2,7 @@
 
 A full-stack document signer built around [Stellar SEP-53](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0053.md).
 
-The app is deliberately off-chain: there is no Stellar transaction and the server never receives a secret key. Users choose a wallet through Stellar Wallets Kit, review the PDF, and sign one canonical message. The server then checks the actual wallet public key, verifies the SEP-53 signature, and confirms the key's signer authority for the represented account through SDF Horizon before publishing a share URL.
+The document-signing path is deliberately off-chain: users choose a wallet through Stellar Wallets Kit, review the PDF, and sign one canonical message without submitting a Stellar transaction or exposing their secret key. The server then checks the actual wallet public key, verifies the SEP-53 signature, and confirms the key's signer authority for the represented account through SDF Horizon before publishing a share URL. Deployments can optionally offer a Soroban mainnet anchor that commits only a digest of the finalized proof.
 
 ## Signing flow
 
@@ -13,7 +13,8 @@ The app is deliberately off-chain: there is no Stellar transaction and the serve
 5. **Review the identity.** A display name and optional PNG/JPEG/WebP visual insignia can be attached.
 6. **Sign.** Immediately before signing, the app fetches the wallet address again. After SEP-53 signing, it checks any signer address returned by the wallet against the key that was reviewed.
 7. **Recheck on the server.** The server verifies the signature and file hashes, reloads the Horizon account, and rejects the request if signer weights, thresholds, or the account-state ledger changed after review.
-8. **Share the proof.** The public page shows the PDF and a signer-authority badge such as **“Medium-weight signer for GAAAA…BBBB”**. The raw signing key remains in the verification details instead of being the primary identity label.
+8. **Optionally anchor it.** When configured, the signer can request a relayed Soroban mainnet transaction containing only a SHA-256 digest of the canonical SEP-53 message plus signature.
+9. **Share the proof.** The public page shows the PDF and signer-authority badge. Anchored proofs also expose their mainnet transaction, ledger, contract, and digest.
 
 ## Signed format
 
@@ -47,6 +48,47 @@ https://horizon.stellar.org
 ~~~
 
 Override it with `HORIZON_URL` if the deployment uses another Horizon service.
+
+## Optional Soroban mainnet anchor
+
+A minimal event-only contract lives in `contracts/proof-anchor`. It accepts one `BytesN<32>` proof digest, emits it with the ledger sequence and ledger timestamp, and stores no PDF or identity data.
+
+The digest is:
+
+~~~text
+SHA-256(
+  "Stellar PDF Soroban Anchor v1\n"
+  || canonical SEP-53 message
+  || "sep53-signature:"
+  || base64 SEP-53 signature
+  || "\n"
+)
+~~~
+
+Build and deploy it:
+
+~~~sh
+stellar contract build --package proof-anchor
+
+stellar network add signer-mainnet \
+  --rpc-url https://mainnet.sorobanrpc.com \
+  --network-passphrase "Public Global Stellar Network ; September 2015"
+
+stellar contract deploy \
+  --wasm target/wasm32v1-none/release/proof_anchor.wasm \
+  --source-account <your-cli-identity> \
+  --network signer-mainnet
+~~~
+
+Configure the deployment with a dedicated, conservatively funded relayer account:
+
+~~~text
+SOROBAN_RPC_URL=https://mainnet.sorobanrpc.com
+SOROBAN_ANCHOR_CONTRACT_ID=C...
+SOROBAN_ANCHOR_SECRET=S...
+~~~
+
+The relayer secret belongs to the deployment, never the document signer. Without both anchor variables the existing SEP-53 flow stays fully off-chain and the anchor option is hidden.
 
 ## Run locally
 
@@ -101,6 +143,6 @@ HORIZON_URL=https://horizon.stellar.org
 
 “Medium-weight signer,” “high-weight signer,” and similar labels describe the signer weight relative to the represented account's threshold configuration at the Horizon account-state ledger captured in the signed message. The signer configuration can change later; the proof preserves what was checked when the signature was created.
 
-Likewise, `signedAt` is cryptographically protected but is still a timestamp claim made by the signer. `serverReceivedAt` records when this server accepted the valid proof. Neither is a trusted timestamp authority.
+Likewise, `signedAt` is cryptographically protected but is still a timestamp claim made by the signer. `serverReceivedAt` records when this server accepted the valid proof. Neither is a trusted timestamp authority. A Soroban anchor independently establishes that the proof digest was committed by the mainnet ledger containing its transaction, but it is not a conventional timestamp-authority certificate.
 
 See [SECURITY.md](./SECURITY.md) for the full trust model.

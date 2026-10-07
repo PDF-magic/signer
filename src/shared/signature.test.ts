@@ -31,7 +31,7 @@ describe("signer authority", () => {
   it("labels the strongest non-zero threshold one signer can meet", () => {
     expect(authorityLevel(authority)).toBe("medium");
     expect(authorityLabel(manifest.representedAccount, authority)).toBe(
-      "Medium-weight signer for GAAAAAAA…AAAAWHF",
+      "Medium-weight signer for GAAAAAAA…AAAAAWHF",
     );
   });
 
