@@ -13,9 +13,9 @@ import type {
 } from "../shared/types";
 import {
   authoritySnapshotsEqual,
-  HorizonLookupError,
+  StellarRpcLookupError,
   resolveSignerAuthority,
-} from "./horizon";
+} from "./rpc";
 import {
   assetPath,
   createId,
@@ -246,11 +246,11 @@ app.post(
         return;
       }
 
-      const horizonAuthority = await resolveSignerAuthority(
+      const rpcAuthority = await resolveSignerAuthority(
         manifest.representedAccount,
         manifest.signerPublicKey,
       );
-      if (!authoritySnapshotsEqual(manifest.authority, horizonAuthority.authority)) {
+      if (!authoritySnapshotsEqual(manifest.authority, rpcAuthority.authority)) {
         res.status(409).json({
           error: "The Stellar signer configuration changed after review. Recheck the account and sign again.",
         });
@@ -368,7 +368,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
     res.status(400).json({ error: message });
     return;
   }
-  if (error instanceof HorizonLookupError) {
+  if (error instanceof StellarRpcLookupError) {
     res.status(error.statusCode).json({ error: error.message });
     return;
   }
